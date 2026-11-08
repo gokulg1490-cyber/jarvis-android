@@ -77,7 +77,7 @@ jobs:
       - name: Build APK
         run: |
           cd "$PROJECT_DIR"
-          gradle --init-script "$RUNNER_TEMP/maven-mirror.gradle" assembleDebug --no-daemon --stacktrace
+          gradle assembleDebug
 
 
       - name: Upload APK
