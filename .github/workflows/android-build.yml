@@ -66,7 +66,20 @@ jobs:
               }
           }
           EOF
+      - name: Fix Java target
+        run: |
+          APP_GRADLE="$PROJECT_DIR/app/build.gradle"
+          if [ -f "$APP_GRADLE" ] && ! grep -q "targetCompatibility JavaVersion.VERSION_17" "$APP_GRADLE"; then
+            cat >> "$APP_GRADLE" <<'EOF'
 
+          android {
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+          fi
       - name: Build APK
         run: |
           cd "$PROJECT_DIR"
