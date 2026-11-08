@@ -28,31 +28,32 @@ jobs:
           packages: 'platform-tools'
 
       - name: Extract project
-        shell: bash
         run: |
           mkdir -p work
           unzip -q JARVIS-Android-Starter.zip -d work
-          PROJECT_DIR=$(find work -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print -quit | xargs dirname)
+          PROJECT_DIR=$(find work -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)
           if [ -z "$PROJECT_DIR" ]; then
             echo "Android project not found"
             exit 1
           fi
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Setup Gradle
+      - name: Download Gradle with retry
         run: |
-          curl -fsSL https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/gradle.zip
-          unzip -q /tmp/gradle.zip -d /tmp
-          echo "/tmp/gradle-8.9/bin" >> "$GITHUB_PATH"
+          curl -fL --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 30 \
+            https://services.gradle.org/distributions/gradle-8.9-bin.zip \
+            -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /opt
+          echo "/opt/gradle-8.9/bin" >> "$GITHUB_PATH"
 
       - name: Build APK
         run: |
           cd "$PROJECT_DIR"
-          gradle --no-daemon assembleDebug
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: JARVIS-Android-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          path: work/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
