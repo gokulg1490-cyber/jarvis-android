@@ -43,10 +43,34 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Configure Maven mirror
+        run: |
+          cat > "$RUNNER_TEMP/maven-mirror.init.gradle" <<'EOF'
+          gradle.beforeSettings { settings ->
+              settings.pluginManagement.repositories {
+                  maven {
+                      url = uri("https://maven.wso2.org/nexus/content/repositories/central/")
+                  }
+              }
+              settings.dependencyResolutionManagement.repositories {
+                  maven {
+                      url = uri("https://maven.wso2.org/nexus/content/repositories/central/")
+                  }
+              }
+          }
+          gradle.beforeProject { project ->
+              project.buildscript.repositories {
+                  maven {
+                      url = uri("https://maven.wso2.org/nexus/content/repositories/central/")
+                  }
+              }
+          }
+          EOF
+
       - name: Build APK
         run: |
           cd "$PROJECT_DIR"
-          gradle assembleDebug --no-daemon --stacktrace
+          gradle --init-script "$RUNNER_TEMP/maven-mirror.init.gradle" assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
