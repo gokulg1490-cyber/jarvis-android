@@ -22,11 +22,17 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
       - name: Extract project
+        shell: bash
         run: |
           mkdir -p work
           unzip -q JARVIS-Android-Starter.zip -d work
-          PROJECT_DIR=$(find work -name settings.gradle.kts -printf '%h\n' | head -n 1)
+          PROJECT_DIR=$(find work -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print -quit | xargs dirname)
           if [ -z "$PROJECT_DIR" ]; then
             echo "Android project not found"
             exit 1
@@ -34,17 +40,19 @@ jobs:
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
+        run: |
+          curl -fsSL https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          echo "/tmp/gradle-8.9/bin" >> "$GITHUB_PATH"
 
       - name: Build APK
         run: |
           cd "$PROJECT_DIR"
-          gradle assembleDebug
+          gradle --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: JARVIS-Android-APK
-          path: work/**/app/build/outputs/apk/debug/*.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
