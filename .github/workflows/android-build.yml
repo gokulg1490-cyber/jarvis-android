@@ -22,67 +22,48 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
-
       - name: Extract project
         run: |
-          mkdir -p work
-          unzip -q JARVIS-Android-Starter.zip -d work
-          PROJECT_DIR=$(find work -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)
+          mkdir -p project
+          unzip -q JARVIS-Android-Starter.zip -d project
+
+      - name: Find Android project
+        run: |
+          PROJECT_DIR=$(find project -name settings.gradle.kts -printf '%h\n' | head -n 1)
           if [ -z "$PROJECT_DIR" ]; then
-            echo "Android project not found"
+            echo "Android Gradle project not found"
             exit 1
           fi
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+
+      - name: Fix Java and Kotlin targets
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("project")
+          files = list(p.rglob("build.gradle.kts"))
+
+          for f in files:
+              s = f.read_text()
+              s = s.replace("JavaVersion.VERSION_1_8", "JavaVersion.VERSION_17")
+              s = s.replace('jvmTarget = "1.8"', 'jvmTarget = "17"')
+              f.write_text(s)
+          PY
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Configure Maven mirror
-        run: |
-          cat > "$RUNNER_TEMP/maven-mirror.init.gradle" <<'EOF'
-          gradle.beforeSettings { settings ->
-              settings.pluginManagement.repositories {
-                  maven {
-                      url = uri("https://maven.wso2.org/nexus/content/repositories/central/")
-                  }
-              }
-              settings.dependencyResolutionManagement.repositories {
-                  maven {
-                      url = uri("https://maven.wso2.org/nexus/content/repositories/central/")
-                  }
-              }
-          }
-          gradle.beforeProject { project ->
-              project.buildscript.repositories {
-                  maven {
-                      url = uri("https://maven.wso2.org/nexus/content/repositories/central/")
-                  }
-              }
-          }
-          EOF
-          
-      - name: Fix Java target
-        run: |
-          find "$PROJECT_DIR" -type f \( -name "*.gradle" -o -name "*.gradle.kts" \) -print0 |
-            xargs -0 -r sed -i \
-            -e 's/JavaVersion.VERSION_1_8/JavaVersion.VERSION_17/g' \
-            -e 's/JavaVersion.VERSION_8/JavaVersion.VERSION_17/g'
-
       - name: Build APK
         run: |
           cd "$PROJECT_DIR"
-          gradle assembleDebug
-
+          gradle --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: JARVIS-Android-APK
-          path: work/**/build/outputs/apk/debug/*.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
