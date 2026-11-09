@@ -21,38 +21,63 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
+      - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Extract the corrected JARVIS project ZIP
+      - name: Locate and extract JARVIS project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          ARCHIVE="$(find . -maxdepth 1 -type f -iname 'JARVIS-Android-Upload-Ready*.zip' | head -n 1)"
-          if [ -z "$ARCHIVE" ]; then
-            echo "Corrected JARVIS ZIP was not found in the repository root."
+          echo "Repository files:"
+          find . -maxdepth 4 -type f | sort | head -200
+
+          PROJECT_DIR=""
+          # First use an Android project already committed to the repository.
+          SETTINGS_FILE="$(find . -type f -name settings.gradle.kts -not -path './.git/*' | head -n 1 || true)"
+          if [ -n "$SETTINGS_FILE" ]; then
+            CANDIDATE="$(dirname "$SETTINGS_FILE")"
+            if [ -f "$CANDIDATE/app/build.gradle.kts" ]; then
+              PROJECT_DIR="$CANDIDATE"
+            fi
+          fi
+
+          # Otherwise locate a JARVIS ZIP anywhere in the repository and extract it.
+          if [ -z "$PROJECT_DIR" ]; then
+            ARCHIVE="$(find . -type f -iname '*jarvis*.zip' -not -path './.git/*' | head -n 1 || true)"
+            if [ -z "$ARCHIVE" ]; then
+              echo "No Android project folder or JARVIS ZIP was found in this commit."
+              echo "Upload the extracted project files (app/, settings.gradle.kts, build.gradle.kts, gradle.properties) to the repository root."
+              exit 1
+            fi
+            mkdir -p extracted-project
+            unzip -oq "$ARCHIVE" -d extracted-project
+            SETTINGS_FILE="$(find extracted-project -type f -name settings.gradle.kts | head -n 1 || true)"
+            if [ -z "$SETTINGS_FILE" ]; then
+              echo "The ZIP does not contain settings.gradle.kts."
+              exit 1
+            fi
+            PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          fi
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "Android app module app/build.gradle.kts was not found in $PROJECT_DIR"
             exit 1
           fi
-          mkdir -p jarvis-project
-          unzip -oq "$ARCHIVE" -d jarvis-project
-          PROJECT_DIR="$(find jarvis-project -type f -name settings.gradle.kts -printf '%h\n' | head -n 1)"
-          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "The ZIP does not contain the expected Android project."
-            exit 1
-          fi
+
+          echo "Building project from: $PROJECT_DIR"
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Build APK using the corrected Java 17 and Kotlin 17 settings
-        run: |
-          gradle --no-daemon -p "${{ steps.project.outputs.project_dir }}" clean :app:assembleDebug
+      - name: Build APK
+        run: gradle --no-daemon -p "${{ steps.project.outputs.project_dir }}" clean :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: JARVIS-Android-debug
-          path: jarvis-project/**/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            **/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
