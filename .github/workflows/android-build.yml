@@ -1,69 +1,58 @@
-
 name: Build JARVIS Android APK
 
 on:
   workflow_dispatch:
   push:
-    paths:
-      - 'JARVIS-Android-Starter.zip'
-      - '.github/workflows/android-build.yml'
+    branches: [ main ]
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Extract project
-        run: |
-          mkdir -p project
-          unzip -q JARVIS-Android-Starter.zip -d project
-
-      - name: Find Android project
-        run: |
-          PROJECT_DIR=$(find project -name settings.gradle.kts -printf '%h\n' | head -n 1)
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "Android Gradle project not found"
-            exit 1
-          fi
-          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-
-      - name: Fix Java and Kotlin targets
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("project")
-          files = list(p.rglob("build.gradle.kts"))
-
-          for f in files:
-              s = f.read_text()
-              s = s.replace("JavaVersion.VERSION_1_8", "JavaVersion.VERSION_17")
-              s = s.replace('jvmTarget = "1.8"', 'jvmTarget = "17"')
-              f.write_text(s)
-          PY
-
-      - name: Setup Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
+      - name: Extract the corrected JARVIS project ZIP
+        id: project
+        shell: bash
         run: |
-          cd "$PROJECT_DIR"
-          gradle --no-daemon assembleDebug
+          set -euo pipefail
+          ARCHIVE="$(find . -maxdepth 1 -type f -iname 'JARVIS-Android-Upload-Ready*.zip' | head -n 1)"
+          if [ -z "$ARCHIVE" ]; then
+            echo "Corrected JARVIS ZIP was not found in the repository root."
+            exit 1
+          fi
+          mkdir -p jarvis-project
+          unzip -oq "$ARCHIVE" -d jarvis-project
+          PROJECT_DIR="$(find jarvis-project -type f -name settings.gradle.kts -printf '%h\n' | head -n 1)"
+          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "The ZIP does not contain the expected Android project."
+            exit 1
+          fi
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Build APK using the corrected Java 17 and Kotlin 17 settings
+        run: |
+          gradle --no-daemon -p "${{ steps.project.outputs.project_dir }}" clean :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: JARVIS-Android-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          name: JARVIS-Android-debug
+          path: jarvis-project/**/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 7
