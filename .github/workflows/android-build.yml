@@ -26,43 +26,68 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Extract the intended JARVIS ZIP
+      - name: Find and extract the Android project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          ARCHIVE="$(find . -type f -name 'JARVIS-Android-Upload-Ready*.zip' -not -path './.git/*' | sort | head -n 1)"
-          if [ -z "$ARCHIVE" ]; then
-            echo "JARVIS-Android-Upload-Ready.zip is missing. Upload that ZIP to the repository root first."
-            exit 1
-          fi
-          echo "Using archive: $ARCHIVE"
-          mkdir -p "$GITHUB_WORKSPACE/jarvis-build-source"
-          unzip -oq "$ARCHIVE" -d "$GITHUB_WORKSPACE/jarvis-build-source"
+          mkdir -p "$GITHUB_WORKSPACE/jarvis-source"
+          PROJECT_DIR=""
 
-          SETTINGS="$(find "$GITHUB_WORKSPACE/jarvis-build-source" -type f -name settings.gradle.kts | head -n 1)"
-          if [ -z "$SETTINGS" ]; then
-            echo "settings.gradle.kts was not found inside the ZIP."
-            exit 1
-          fi
-          PROJECT_DIR="$(dirname "$SETTINGS")"
-          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "app/build.gradle.kts was not found inside the ZIP."
-            exit 1
+          SETTINGS="$(find . -type f -name settings.gradle.kts -not -path './.git/*' | head -n 1 || true)"
+          if [ -n "$SETTINGS" ]; then
+            CANDIDATE="$(dirname "$SETTINGS")"
+            if [ -f "$CANDIDATE/app/build.gradle.kts" ]; then
+              PROJECT_DIR="$CANDIDATE"
+            fi
           fi
 
-          # Explicitly force Java compile tasks to JVM 17 as well as the Android DSL.
-          cat >> "$PROJECT_DIR/app/build.gradle.kts" <<'GRADLE'
+          if [ -z "$PROJECT_DIR" ]; then
+            while IFS= read -r -d '' ARCHIVE; do
+              if unzip -Z1 "$ARCHIVE" | grep -Eq '(^|/)settings\.gradle\.kts$' &&
+                 unzip -Z1 "$ARCHIVE" | grep -Eq '(^|/)app/build\.gradle\.kts$'; then
+                echo "Using Android project archive: $ARCHIVE"
+                unzip -oq "$ARCHIVE" -d "$GITHUB_WORKSPACE/jarvis-source"
+                SETTINGS="$(find "$GITHUB_WORKSPACE/jarvis-source" -type f -name settings.gradle.kts | head -n 1 || true)"
+                if [ -n "$SETTINGS" ]; then
+                  CANDIDATE="$(dirname "$SETTINGS")"
+                  if [ -f "$CANDIDATE/app/build.gradle.kts" ]; then
+                    PROJECT_DIR="$CANDIDATE"
+                    break
+                  fi
+                fi
+              fi
+            done < <(find . -type f -iname '*.zip' -not -path './.git/*' -print0)
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "No valid Android project found. The repository needs app/build.gradle.kts and settings.gradle.kts, either directly or inside a ZIP."
+            find . -maxdepth 5 -type f | sort | head -250
+            exit 1
+          fi
+
+          echo "Android project directory: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Force Java and Kotlin JVM targets to 17
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/build.gradle.kts")
+          s = p.read_text()
+          s += """
 
           tasks.withType<org.gradle.api.tasks.compile.JavaCompile>().configureEach {
               sourceCompatibility = "17"
               targetCompatibility = "17"
           }
-          GRADLE
-
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Using Android project: $PROJECT_DIR"
-          grep -nE 'VERSION_17|jvmTarget|sourceCompatibility|targetCompatibility' "$PROJECT_DIR/app/build.gradle.kts"
+          """
+          p.write_text(s)
+          print("Forced Java compile task targets to 17")
+          PY
 
       - name: Build APK
         run: gradle --no-daemon -p "${{ steps.project.outputs.project_dir }}" clean :app:assembleDebug
@@ -71,6 +96,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: JARVIS-Android-debug
-          path: jarvis-build-source/**/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            **/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
