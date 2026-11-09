@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,82 +22,70 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
+      - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      # IMPORTANT: use the uploaded ZIP first, not an older app folder in the repo.
-      - name: Extract uploaded JARVIS project and correct JVM targets
+      - name: Extract the uploaded JARVIS project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/jarvis-source"
-          ARCHIVE=""
+          mkdir -p "$GITHUB_WORKSPACE/jarvis-project"
 
-          while IFS= read -r -d '' candidate; do
-            if unzip -Z1 "$candidate" | grep -Eq '(^|/)settings\.gradle\.kts$' &&
-               unzip -Z1 "$candidate" | grep -Eq '(^|/)app/build\.gradle\.kts$'; then
-              ARCHIVE="$candidate"
-              break
-            fi
-          done < <(find . -type f -iname '*.zip' -not -path './.git/*' -print0)
+          # Prefer the exact project ZIP supplied for this build.
+          ZIP=""
+          if [ -f "JARVIS-Android-Upload-Ready.zip" ]; then
+            ZIP="JARVIS-Android-Upload-Ready.zip"
+          else
+            while IFS= read -r -d '' candidate; do
+              if unzip -Z1 "$candidate" | grep -Eq '(^|/)settings\.gradle\.kts$' &&
+                 unzip -Z1 "$candidate" | grep -Eq '(^|/)app/build\.gradle\.kts$'; then
+                ZIP="$candidate"
+                break
+              fi
+            done < <(find . -type f -iname '*.zip' -not -path './.git/*' -print0)
+          fi
 
-          if [ -z "$ARCHIVE" ]; then
-            echo "No ZIP containing settings.gradle.kts and app/build.gradle.kts was found."
+          if [ -z "$ZIP" ]; then
+            echo "No Android project ZIP found in the repository root or subfolders."
             exit 1
           fi
 
-          echo "Building from ZIP: $ARCHIVE"
-          unzip -oq "$ARCHIVE" -d "$GITHUB_WORKSPACE/jarvis-source"
+          echo "Using ZIP: $ZIP"
+          unzip -oq "$ZIP" -d "$GITHUB_WORKSPACE/jarvis-project"
 
-          SETTINGS="$(find "$GITHUB_WORKSPACE/jarvis-source" -type f -name settings.gradle.kts | head -n 1)"
+          SETTINGS="$(find "$GITHUB_WORKSPACE/jarvis-project" -type f -name settings.gradle.kts | head -n 1)"
+          if [ -z "$SETTINGS" ]; then
+            echo "settings.gradle.kts missing after extraction."
+            exit 1
+          fi
+
           PROJECT_DIR="$(dirname "$SETTINGS")"
-          APP_GRADLE="$PROJECT_DIR/app/build.gradle.kts"
-
-          if [ ! -f "$APP_GRADLE" ]; then
-            echo "app/build.gradle.kts not found after extraction."
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "app/build.gradle.kts missing from extracted project."
             exit 1
           fi
 
-          python3 - "$APP_GRADLE" <<'PY'
-          import pathlib, re, sys
-          p = pathlib.Path(sys.argv[1])
-          s = p.read_text()
-
-          # Replace any legacy Java 8 target declaration.
-          s = re.sub(r'JavaVersion\.VERSION_1_8', 'JavaVersion.VERSION_17', s)
-          s = re.sub(r'(sourceCompatibility\s*=\s*)["\']1\.8["\']', r'\1JavaVersion.VERSION_17', s)
-          s = re.sub(r'(targetCompatibility\s*=\s*)["\']1\.8["\']', r'\1JavaVersion.VERSION_17', s)
-
-          # Ensure Android compileOptions are explicitly set to Java 17.
-          if 'compileOptions {' in s:
-              if 'sourceCompatibility' not in s:
-                  s = s.replace('compileOptions {', 'compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_17', 1)
-              if 'targetCompatibility' not in s:
-                  s = s.replace('compileOptions {', 'compileOptions {\n        targetCompatibility = JavaVersion.VERSION_17', 1)
-          else:
-              s = s.replace('android {', 'android {\n    compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_17\n        targetCompatibility = JavaVersion.VERSION_17\n    }', 1)
-
-          # Ensure Kotlin target is 17.
-          if re.search(r'kotlinOptions\s*\{', s):
-              if re.search(r'jvmTarget\s*=', s):
-                  s = re.sub(r'jvmTarget\s*=\s*["\'][^"\']+["\']', 'jvmTarget = "17"', s)
-              else:
-                  s = re.sub(r'(kotlinOptions\s*\{)', r'\1\n        jvmTarget = "17"', s, count=1)
-          else:
-              s += '\n\nkotlinOptions {\n    jvmTarget = "17"\n}\n'
-
-          p.write_text(s)
-          print("Corrected app/build.gradle.kts:")
-          print(s)
-          PY
-
+          echo "Project directory: $PROJECT_DIR"
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Build APK
-        run: gradle --no-daemon -p "${{ steps.project.outputs.project_dir }}" clean :app:assembleDebug
+      - name: Verify Java and Kotlin targets
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking app/build.gradle.kts"
+          grep -n -A4 -B2 'compileOptions\|kotlinOptions\|jvmTarget' app/build.gradle.kts
+          grep -q 'sourceCompatibility = JavaVersion.VERSION_17' app/build.gradle.kts
+          grep -q 'targetCompatibility = JavaVersion.VERSION_17' app/build.gradle.kts
+          grep -q 'jvmTarget = "17"' app/build.gradle.kts
+          echo "Java and Kotlin targets are both set to 17."
+
+      - name: Build Debug APK
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: gradle --no-daemon clean :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
